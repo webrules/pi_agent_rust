@@ -246,7 +246,7 @@ export function request(input, optionsOrCallback, callback) {
     callback = optionsOrCallback;
     options = typeof input === 'string' || input instanceof URL
       ? { ...(typeof input === 'string' ? (() => { try { const u = new URL(input); return { protocol: u.protocol, hostname: u.hostname, port: u.port, path: u.pathname + u.search }; } catch(_) { return { path: input }; } })() : { protocol: input.protocol, hostname: input.hostname, port: input.port, path: input.pathname + input.search }) }
-      : (input || {});
+      : { ...(input || {}) };
   } else {
     options = typeof input === 'string' || input instanceof URL
       ? { ...(typeof input === 'string' ? (() => { try { const u = new URL(input); return { protocol: u.protocol, hostname: u.hostname, port: u.port, path: u.pathname + u.search }; } catch(_) { return { path: input }; } })() : { protocol: input.protocol, hostname: input.hostname, port: input.port, path: input.pathname + input.search }), ...(optionsOrCallback || {}) }
