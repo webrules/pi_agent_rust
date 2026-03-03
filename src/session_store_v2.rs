@@ -1421,12 +1421,12 @@ impl<'a> SegmentFileReader<'a> {
         if self.current_segment_seq != Some(row.segment_seq) {
             self.current_segment_seq = Some(row.segment_seq);
             let path = self.store.segment_file_path(row.segment_seq);
-            if !path.exists() {
-                self.current_file = None;
-            } else {
+            if path.exists() {
                 let file = File::open(&path)?;
                 self.current_len = file.metadata()?.len();
                 self.current_file = Some(file);
+            } else {
+                self.current_file = None;
             }
         }
 
