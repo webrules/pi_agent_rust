@@ -1623,7 +1623,7 @@ impl Cli {
         self.args
             .iter()
             .filter(|a| a.starts_with('@'))
-            .map(|a| a.trim_start_matches('@'))
+            .map(|a| a.strip_prefix('@').unwrap_or(a))
             .collect()
     }
 

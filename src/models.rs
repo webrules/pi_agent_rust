@@ -1441,12 +1441,14 @@ fn resolve_shell(cmd: &str) -> Option<String> {
     let output = if cfg!(windows) {
         std::process::Command::new("cmd")
             .args(["/C", cmd])
+            .stdin(std::process::Stdio::null())
             .output()
             .ok()?
     } else {
         std::process::Command::new("sh")
             .arg("-c")
             .arg(cmd)
+            .stdin(std::process::Stdio::null())
             .output()
             .ok()?
     };

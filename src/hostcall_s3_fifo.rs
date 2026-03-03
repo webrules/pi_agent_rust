@@ -437,7 +437,7 @@ impl<K: Ord + Clone> S3FifoPolicy<K> {
                 true
             }
         });
-        
+
         if should_remove {
             self.owner_live_counts.remove(owner);
         }

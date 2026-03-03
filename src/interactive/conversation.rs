@@ -21,8 +21,8 @@ pub(super) fn assistant_content_to_text(content: &[ContentBlock]) -> (String, Op
 
     for block in content {
         match block {
-            ContentBlock::Text(t) => text.push_str(&t.text),
-            ContentBlock::Thinking(t) => thinking.push_str(&t.thinking),
+            ContentBlock::Text(t) => push_line(&mut text, &t.text),
+            ContentBlock::Thinking(t) => push_line(&mut thinking, &t.thinking),
             _ => {}
         }
     }

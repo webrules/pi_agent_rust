@@ -1450,7 +1450,7 @@ impl PiApp {
                     let dir = std::env::temp_dir();
                     let filename = format!("pi_copy_{}.txt", Utc::now().timestamp_millis());
                     let path = dir.join(filename);
-                    
+
                     let mut options = std::fs::OpenOptions::new();
                     options.write(true).create_new(true);
                     #[cfg(unix)]
@@ -1458,10 +1458,10 @@ impl PiApp {
                         use std::os::unix::fs::OpenOptionsExt;
                         options.mode(0o600);
                     }
-                    
+
                     let mut file = options.open(&path)?;
                     file.write_all(text.as_bytes())?;
-                    
+
                     Ok(path)
                 };
 

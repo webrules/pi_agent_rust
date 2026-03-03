@@ -1,7 +1,7 @@
 {
   "schema": "pi.ci.certification_lane.v1",
   "lane": "full",
-  "generated_at": "2026-03-02T19:08:54.041Z",
+  "generated_at": "2026-03-02T19:49:49.366Z",
   "verdict": "fail",
   "policy": "Full certification: all blocking gates must pass for release. Waived gates are tracked but do not block. Expired waivers fail the waiver_lifecycle gate.",
   "gates": [
@@ -45,9 +45,10 @@
       "id": "evidence_bundle",
       "name": "Unified evidence bundle",
       "bead": "bd-1f42.6.8",
-      "status": "pass",
+      "status": "fail",
       "blocking": false,
       "artifact_path": "tests/evidence_bundle/index.json",
+      "detail": "summary.verdict = 'insufficient' (expected one of: [\"complete\", \"partial\"])",
       "reproduce_command": "cargo test --test ci_evidence_bundle -- build_evidence_bundle --nocapture --exact"
     },
     {
@@ -189,7 +190,7 @@
   ],
   "waiver_audit": {
     "schema": "pi.ci.waiver_audit.v1",
-    "generated_at": "2026-03-02T19:08:54.041Z",
+    "generated_at": "2026-03-02T19:49:49.366Z",
     "total_waivers": 0,
     "active": 0,
     "expired": 0,
@@ -201,8 +202,8 @@
   "waivers_applied": [],
   "summary": {
     "total_gates": 20,
-    "passed": 19,
-    "failed": 1,
+    "passed": 18,
+    "failed": 2,
     "warned": 0,
     "skipped": 0,
     "waived": 0,

@@ -527,7 +527,9 @@ fn delete_session_file_with_trash_cmd(path: &Path, trash_cmd: &str) -> Result<()
     // Delete the sidecar directory first if it exists
     let sidecar_path = crate::session_store_v2::v2_sidecar_path(path);
     if sidecar_path.exists() && !try_trash_with_cmd(&sidecar_path, trash_cmd) {
-        let _ = fs::remove_dir_all(&sidecar_path);
+        if let Err(e) = fs::remove_dir_all(&sidecar_path) {
+            tracing::warn!(path = %sidecar_path.display(), error = %e, "Failed to remove session sidecar");
+        }
     }
 
     if try_trash_with_cmd(path, trash_cmd) {
@@ -544,7 +546,11 @@ fn delete_session_file_with_trash_cmd(path: &Path, trash_cmd: &str) -> Result<()
 }
 
 fn try_trash_with_cmd(path: &Path, trash_cmd: &str) -> bool {
-    match std::process::Command::new(trash_cmd).arg(path).status() {
+    match std::process::Command::new(trash_cmd)
+        .arg(path)
+        .stdin(std::process::Stdio::null())
+        .status()
+    {
         Ok(status) if status.success() => true,
         Ok(status) => {
             tracing::warn!(

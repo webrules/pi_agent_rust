@@ -860,7 +860,11 @@ fn check_tool(
 
     let command_target = discovered_path.as_deref().unwrap_or(tool);
 
-    match Command::new(command_target).args(args).output() {
+    match Command::new(command_target)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .output()
+    {
         Ok(output) if output.status.success() => {
             // Extract version from first line of stdout
             let version = String::from_utf8_lossy(&output.stdout);

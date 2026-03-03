@@ -43,8 +43,8 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::fmt::Write as _;
 use std::fs;
-use std::net::IpAddr;
 use std::io::Read;
+use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering as StdOrdering};
@@ -9763,7 +9763,11 @@ impl FsConnector {
         })
     }
 
-    pub fn handle_host_call(&self, call: &HostCallPayload, extension_id: Option<&str>) -> HostResultPayload {
+    pub fn handle_host_call(
+        &self,
+        call: &HostCallPayload,
+        extension_id: Option<&str>,
+    ) -> HostResultPayload {
         if !call.method.trim().eq_ignore_ascii_case("fs") {
             return HostResultPayload {
                 call_id: call.call_id.clone(),
@@ -9798,7 +9802,11 @@ impl FsConnector {
         }
     }
 
-    fn handle_fs_params(&self, params: &Value, extension_id: Option<&str>) -> std::result::Result<Value, HostCallError> {
+    fn handle_fs_params(
+        &self,
+        params: &Value,
+        extension_id: Option<&str>,
+    ) -> std::result::Result<Value, HostCallError> {
         let op = params
             .get("op")
             .and_then(Value::as_str)

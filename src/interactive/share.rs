@@ -23,6 +23,7 @@ pub(super) async fn run_command_output(
     let child = Command::new(program)
         .args(args)
         .current_dir(cwd)
+        .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()?;

@@ -441,7 +441,7 @@ impl TraceJitCompiler {
                     cost_delta: 0,
                 };
             };
-            
+
             let mut failed_guard = None;
             for (idx, guard) in compiled.guards.iter().enumerate() {
                 if !guard.check(trace, ctx) {
@@ -454,7 +454,7 @@ impl TraceJitCompiler {
                     break;
                 }
             }
-            
+
             (compiled.tier_improvement_delta, failed_guard)
         };
 

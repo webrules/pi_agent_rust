@@ -299,10 +299,14 @@ fn run() -> Result<()> {
 }
 
 fn setup_native_runtime_bench_handle() -> Result<ExtensionRuntimeHandle> {
-    let descriptor_path = std::env::temp_dir().join(format!("pi_agent_rust_native_bench_descriptor_{}.native.json", std::process::id()));
+    let descriptor_path = std::env::temp_dir().join(format!(
+        "pi_agent_rust_native_bench_descriptor_{}.native.json",
+        std::process::id()
+    ));
     fs::write(&descriptor_path, NATIVE_RUNTIME_DESCRIPTOR).map_err(|err| {
         Error::extension(format!(
-            "native workload: failed to write descriptor {}: {err}", descriptor_path.display()
+            "native workload: failed to write descriptor {}: {err}",
+            descriptor_path.display()
         ))
     })?;
 

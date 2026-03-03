@@ -169,7 +169,7 @@ pub fn truncate_head(
 ) -> TruncationResult {
     let mut content = content.into();
     let total_bytes = content.len();
-    
+
     let total_lines = {
         let nl = memchr::memchr_iter(b'\n', content.as_bytes()).count();
         if content.is_empty() {
@@ -187,7 +187,11 @@ pub fn truncate_head(
         return TruncationResult {
             content,
             truncated,
-            truncated_by: if truncated { Some(TruncatedBy::Lines) } else { None },
+            truncated_by: if truncated {
+                Some(TruncatedBy::Lines)
+            } else {
+                None
+            },
             total_lines,
             total_bytes,
             output_lines: 0,
@@ -198,7 +202,7 @@ pub fn truncate_head(
             max_bytes,
         };
     }
-    
+
     if max_bytes == 0 {
         let truncated = !content.is_empty();
         let first_line_exceeds_limit = !content.is_empty();
@@ -206,7 +210,11 @@ pub fn truncate_head(
         return TruncationResult {
             content,
             truncated,
-            truncated_by: if truncated { Some(TruncatedBy::Bytes) } else { None },
+            truncated_by: if truncated {
+                Some(TruncatedBy::Bytes)
+            } else {
+                None
+            },
             total_lines,
             total_bytes,
             output_lines: 0,
@@ -236,7 +244,7 @@ pub fn truncate_head(
 
     let first_newline = memchr::memchr(b'\n', content.as_bytes());
     let first_line_bytes = first_newline.unwrap_or(content.len());
-    
+
     if first_line_bytes > max_bytes {
         let mut valid_bytes = max_bytes;
         while valid_bytes > 0 && !content.is_char_boundary(valid_bytes) {
@@ -2680,6 +2688,14 @@ impl Tool for EditTool {
         let absolute_path =
             crate::extensions::safe_canonicalize(&resolve_read_path(&input.path, &self.cwd));
 
+        // Match legacy behavior: any access failure is reported as "File not found".
+        if !file_exists(&absolute_path) {
+            return Err(Error::tool(
+                "edit",
+                format!("File not found: {}", input.path),
+            ));
+        }
+
         let canonical_cwd = crate::extensions::safe_canonicalize(&self.cwd);
         if !absolute_path.starts_with(&canonical_cwd) {
             return Err(Error::validation(format!(
@@ -2689,7 +2705,6 @@ impl Tool for EditTool {
             )));
         }
 
-        // Match legacy behavior: any access failure is reported as "File not found".
         if asupersync::fs::OpenOptions::new()
             .read(true)
             .write(true)
@@ -4968,12 +4983,22 @@ impl Tool for HashlineEditTool {
         }
 
         // Resolve file path
-        let absolute_path = resolve_read_path(&input.path, &self.cwd);
+        let absolute_path =
+            crate::extensions::safe_canonicalize(&resolve_read_path(&input.path, &self.cwd));
         if !file_exists(&absolute_path) {
             return Err(Error::tool(
                 "hashline_edit",
                 format!("File not found: {}", input.path),
             ));
+        }
+
+        let canonical_cwd = crate::extensions::safe_canonicalize(&self.cwd);
+        if !absolute_path.starts_with(&canonical_cwd) {
+            return Err(Error::validation(format!(
+                "Cannot edit outside the working directory (resolved: {}, cwd: {})",
+                absolute_path.display(),
+                canonical_cwd.display()
+            )));
         }
 
         // Check file size
@@ -5098,7 +5123,11 @@ impl Tool for HashlineEditTool {
                         idx
                     };
                     resolved.push(ResolvedEdit {
-                        op: if file_lines == [""] && edit.pos.is_none() { "replace" } else { "prepend" },
+                        op: if file_lines == [""] && edit.pos.is_none() {
+                            "replace"
+                        } else {
+                            "prepend"
+                        },
                         start: idx,
                         end: end_idx,
                         lines: replacement_lines,
@@ -5122,7 +5151,11 @@ impl Tool for HashlineEditTool {
                         idx
                     };
                     resolved.push(ResolvedEdit {
-                        op: if file_lines == [""] && edit.pos.is_none() { "replace" } else { "append" },
+                        op: if file_lines == [""] && edit.pos.is_none() {
+                            "replace"
+                        } else {
+                            "append"
+                        },
                         start: idx,
                         end: end_idx,
                         lines: replacement_lines,

@@ -353,7 +353,7 @@ impl<C: Clock> Scheduler<C> {
     fn allocate_timer_id(&mut self) -> u64 {
         let start = self.next_timer_id;
         let mut candidate = start;
-        
+
         loop {
             // Calculate the next ID to try after this one
             self.next_timer_id = if candidate == u64::MAX {

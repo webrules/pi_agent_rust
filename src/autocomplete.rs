@@ -304,7 +304,7 @@ impl AutocompleteProvider {
     }
 
     fn suggest_file_ref(&mut self, token: &TokenAtCursor<'_>) -> AutocompleteResponse {
-        let query = token.text.trim_start_matches('@');
+        let query = token.text.strip_prefix('@').unwrap_or(token.text);
         self.file_cache.refresh_if_needed(&self.cwd);
 
         let mut items = self
