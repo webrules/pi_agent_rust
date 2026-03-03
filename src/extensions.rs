@@ -24102,7 +24102,10 @@ impl ExtensionManager {
     fn publish_snapshot(&self, snap: RegistrySnapshot) {
         let version = snap.version;
         {
-            let mut guard = self.snapshot.write().unwrap();
+            let mut guard = match self.snapshot.write() {
+                Ok(guard) => guard,
+                Err(poisoned) => poisoned.into_inner(),
+            };
             *guard = Arc::new(snap);
         }
         self.snapshot_version.store(version, StdOrdering::Release);
@@ -24112,7 +24115,11 @@ impl ExtensionManager {
     ///
     /// Cost: one `RwLock::read()` (uncontended fast-path) + `Arc::clone`.
     fn read_snapshot(&self) -> Arc<RegistrySnapshot> {
-        Arc::clone(&self.snapshot.read().unwrap())
+        let guard = match self.snapshot.read() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        Arc::clone(&guard)
     }
 
     /// Current snapshot version (seqlock counter).

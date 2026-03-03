@@ -1,6 +1,6 @@
 {
   "schema": "pi.sec.compatibility_conformance.v1",
-  "generated_at": "2026-02-14T12:18:29.148Z",
+  "generated_at": "2026-03-03T22:07:49.456Z",
   "bead": "bd-1a2cu",
   "verdict": "pass",
   "pass_count": 40,
@@ -302,13 +302,8 @@
       "fail": 0,
       "skip": 0
     },
-    "trust_lifecycle": {
-      "pass": 4,
-      "fail": 0,
-      "skip": 0
-    },
-    "explanation_completeness": {
-      "pass": 3,
+    "benign_capability": {
+      "pass": 15,
       "fail": 0,
       "skip": 0
     },
@@ -317,13 +312,18 @@
       "fail": 0,
       "skip": 0
     },
-    "serde_roundtrip": {
+    "explanation_completeness": {
       "pass": 3,
       "fail": 0,
       "skip": 0
     },
-    "benign_capability": {
-      "pass": 15,
+    "trust_lifecycle": {
+      "pass": 4,
+      "fail": 0,
+      "skip": 0
+    },
+    "serde_roundtrip": {
+      "pass": 3,
       "fail": 0,
       "skip": 0
     }
