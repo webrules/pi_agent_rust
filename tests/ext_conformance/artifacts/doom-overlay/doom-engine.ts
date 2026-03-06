@@ -31,9 +31,11 @@ export class DoomEngine {
 	private wadPath: string;
 	private _width = 640;
 	private _height = 400;
+	private progress?: (message: string) => void;
 
-	constructor(wadPath: string) {
+	constructor(wadPath: string, progress?: (message: string) => void) {
 		this.wadPath = wadPath;
+		this.progress = progress;
 	}
 
 	get width(): number {
@@ -45,6 +47,7 @@ export class DoomEngine {
 	}
 
 	async init(): Promise<void> {
+		this.progress?.("DOOM init: locating WASM build...");
 		// Locate WASM build
 		const __dirname = dirname(fileURLToPath(import.meta.url));
 		const buildDir = join(__dirname, "doom", "build");
@@ -54,17 +57,65 @@ export class DoomEngine {
 			throw new Error(`WASM not found at ${doomJsPath}. Run ./doom/build.sh first`);
 		}
 
+		this.progress?.("DOOM init: reading WAD file...");
 		// Read WAD file
 		const wadData = readFileSync(this.wadPath);
 		const wadArray = Array.from(new Uint8Array(wadData));
+		this.progress?.(`DOOM init: WAD loaded (${wadArray.length} bytes)`);
 
+		this.progress?.("DOOM init: loading generated JS glue...");
 		// Load WASM module - eval to bypass jiti completely
 		const doomJsCode = readFileSync(doomJsPath, "utf-8");
 		const moduleExports: { exports: unknown } = { exports: {} };
 		const nativeRequire = createRequire(doomJsPath);
+		const wasmDebug: string[] = [];
+		const originalCompile = WebAssembly.compile.bind(WebAssembly);
+		const originalInstantiate = WebAssembly.instantiate.bind(WebAssembly);
+		let wasmCallSeq = 0;
+		(WebAssembly as unknown as { compile: typeof WebAssembly.compile }).compile = async (source) => {
+			const callId = ++wasmCallSeq;
+			const start = Date.now();
+			this.progress?.(`DOOM init: wasm compile #${callId} start`);
+			wasmDebug.push(`compile#${callId}:start`);
+			try {
+				const result = await originalCompile(source);
+				this.progress?.(`DOOM init: wasm compile #${callId} done in ${Date.now() - start}ms`);
+				wasmDebug.push(`compile#${callId}:done:${Date.now() - start}ms`);
+				return result;
+			} catch (error) {
+				this.progress?.(`DOOM init: wasm compile #${callId} failed: ${String(error)}`);
+				wasmDebug.push(`compile#${callId}:fail:${String(error)}`);
+				throw error;
+			}
+		};
+		(
+			WebAssembly as unknown as {
+				instantiate: typeof WebAssembly.instantiate;
+			}
+		).instantiate = async (source, imports) => {
+			const callId = ++wasmCallSeq;
+			const sourceKind =
+				typeof source === "object" && source && "__wasm_module_id" in (source as object)
+					? "module"
+					: "bytes";
+			const start = Date.now();
+			this.progress?.(`DOOM init: wasm instantiate #${callId} start (${sourceKind})`);
+			wasmDebug.push(`instantiate#${callId}:start:${sourceKind}`);
+			try {
+				const result = await originalInstantiate(source, imports);
+				this.progress?.(`DOOM init: wasm instantiate #${callId} done in ${Date.now() - start}ms`);
+				wasmDebug.push(`instantiate#${callId}:done:${Date.now() - start}ms`);
+				return result;
+			} catch (error) {
+				this.progress?.(`DOOM init: wasm instantiate #${callId} failed: ${String(error)}`);
+				wasmDebug.push(`instantiate#${callId}:fail:${String(error)}`);
+				throw error;
+			}
+		};
 		const moduleFunc = new Function("module", "exports", "__dirname", "__filename", "require", doomJsCode);
 		moduleFunc(moduleExports, moduleExports.exports, buildDir, doomJsPath, nativeRequire);
 		const createDoomModule = moduleExports.exports as (config: unknown) => Promise<DoomModule>;
+		this.progress?.("DOOM init: JS glue loaded, instantiating module...");
 
 		const moduleConfig = {
 			locateFile: (path: string) => {
@@ -84,19 +135,45 @@ export class DoomEngine {
 			],
 		};
 
-		this.module = await createDoomModule(moduleConfig);
-		if (!this.module) {
-			throw new Error("Failed to initialize DOOM module");
+		try {
+			const initStart = Date.now();
+			this.progress?.("DOOM init: calling createDoomModule...");
+			const modulePromise = createDoomModule(moduleConfig);
+			this.progress?.("DOOM init: createDoomModule returned.");
+			const moduleOrTimeout = await Promise.race([
+				modulePromise,
+				new Promise<never>((_, reject) => {
+					setTimeout(() => {
+						reject(
+							new Error(
+								`createDoomModule timed out after ${Date.now() - initStart}ms; wasmDebug=${wasmDebug.join(",")}`,
+							),
+						);
+					}, 15000);
+				}),
+			]);
+			this.module = moduleOrTimeout;
+			if (!this.module) {
+				throw new Error("Failed to initialize DOOM module");
+			}
+			this.progress?.("DOOM init: module instantiated.");
+		} finally {
+			(WebAssembly as unknown as { compile: typeof WebAssembly.compile }).compile = originalCompile;
+			(WebAssembly as unknown as { instantiate: typeof WebAssembly.instantiate }).instantiate =
+				originalInstantiate;
 		}
 
 		// Initialize DOOM
+		this.progress?.("DOOM init: booting engine...");
 		this.initDoom();
+		this.progress?.("DOOM init: engine booted.");
 
 		// Get framebuffer info
 		this.frameBufferPtr = this.module._DG_GetFrameBuffer();
 		this._width = this.module._DG_GetScreenWidth();
 		this._height = this.module._DG_GetScreenHeight();
 		this.initialized = true;
+		this.progress?.(`DOOM init: framebuffer ready (${this._width}x${this._height}).`);
 	}
 
 	private initDoom(): void {

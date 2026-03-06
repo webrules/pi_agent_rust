@@ -47,11 +47,15 @@ export default function (pi: ExtensionAPI) {
 					isResume = true;
 				} else {
 					ctx.ui.notify(`Loading DOOM from ${wad}...`, "info");
-					activeEngine = new DoomEngine(wad);
+					ctx.ui.notify("Creating DOOM engine...", "info");
+					activeEngine = new DoomEngine(wad, (message) => ctx.ui.notify(message, "info"));
+					ctx.ui.notify("Initializing DOOM engine...", "info");
 					await activeEngine.init();
+					ctx.ui.notify("DOOM engine initialized.", "info");
 					activeWadPath = wad;
 				}
 
+				ctx.ui.notify("Opening DOOM overlay...", "info");
 				await ctx.ui.custom(
 					(tui, _theme, _keybindings, done) => {
 						return new DoomOverlayComponent(tui, activeEngine!, () => done(undefined), isResume);
