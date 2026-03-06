@@ -272,6 +272,12 @@ impl SessionIndex {
         if !self.db_path.exists() {
             return true;
         }
+        // Prefer the persisted sync epoch over the main SQLite file mtime.
+        // In WAL mode, recent writes can live in the sidecar files while the
+        // base database timestamp stays old enough to look stale.
+        if let Ok(Some(last_sync_epoch_ms)) = self.with_lock(load_last_sync_epoch_ms) {
+            return epoch_ms_is_stale(last_sync_epoch_ms, max_age);
+        }
         let Ok(meta) = fs::metadata(&self.db_path) else {
             return true;
         };
@@ -617,6 +623,35 @@ fn current_epoch_ms() -> String {
     chrono::Utc::now().timestamp_millis().to_string()
 }
 
+fn current_epoch_ms_i64() -> i64 {
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    i64::try_from(millis).unwrap_or(i64::MAX)
+}
+
+fn epoch_ms_is_stale(epoch_ms: i64, max_age: Duration) -> bool {
+    let age_ms = current_epoch_ms_i64().saturating_sub(epoch_ms);
+    u128::try_from(age_ms).unwrap_or(u128::MAX) > max_age.as_millis()
+}
+
+fn load_last_sync_epoch_ms(conn: &SqliteConnection) -> Result<Option<i64>> {
+    let rows = conn
+        .query_sync(
+            "SELECT value FROM meta WHERE key='last_sync_epoch_ms' LIMIT 1",
+            &[],
+        )
+        .map_err(|err| Error::session(format!("Query meta failed: {err}")))?;
+    let Some(row) = rows.into_iter().next() else {
+        return Ok(None);
+    };
+    let value = row
+        .get_named::<String>("value")
+        .map_err(|err| Error::session(format!("get meta value: {err}")))?;
+    Ok(value.parse::<i64>().ok())
+}
+
 fn lock_file_guard(file: &File, timeout: Duration) -> Result<LockGuard<'_>> {
     let start = Instant::now();
     loop {
@@ -661,6 +696,8 @@ mod tests {
     use proptest::string::string_regex;
     use std::collections::HashMap;
     use std::fs;
+    #[cfg(unix)]
+    use std::process::Command;
     use std::time::Duration;
 
     fn write_session_jsonl(path: &Path, header: &SessionHeader, entries: &[SessionEntry]) {
@@ -1317,6 +1354,40 @@ mod tests {
 
         // DB just created — should not need reindex for large max_age
         assert!(!index.should_reindex(Duration::from_secs(3600)));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn should_reindex_prefers_meta_timestamp_over_stale_db_mtime() {
+        let harness = TestHarness::new("should_reindex_prefers_meta_timestamp_over_stale_db_mtime");
+        let root = harness.temp_path("sessions");
+        fs::create_dir_all(&root).expect("create root dir");
+        let index = SessionIndex::for_sessions_root(&root);
+
+        let session_path = harness.temp_path("sessions/project/fresh-meta.jsonl");
+        fs::create_dir_all(session_path.parent().expect("parent")).expect("create dirs");
+        fs::write(&session_path, "data").expect("write");
+
+        let mut session = Session::in_memory();
+        session.header = make_header("id-fresh-meta", "cwd-fresh-meta");
+        session.path = Some(session_path);
+        session.entries.push(make_user_entry(None, "m1", "hi"));
+        index.index_session(&session).expect("index session");
+
+        let status = Command::new("touch")
+            .args([
+                "-t",
+                "200001010000",
+                index.db_path.to_str().expect("utf-8 db path"),
+            ])
+            .status()
+            .expect("run touch");
+        assert!(status.success(), "touch should succeed");
+
+        assert!(
+            !index.should_reindex(Duration::from_secs(3600)),
+            "fresh meta.last_sync_epoch_ms should outrank stale db mtime"
+        );
     }
 
     // ── reindex_if_stale ────────────────────────────────────────────
