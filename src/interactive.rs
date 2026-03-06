@@ -754,6 +754,55 @@ impl PiApp {
         self.current_tool.is_some() || self.show_processing_status_spinner()
     }
 
+    /// Return whether the normal editor input area should be visible.
+    ///
+    /// Keeping this in one place prevents overlay/input drift between
+    /// rendering, viewport sizing, and keyboard dispatch.
+    fn editor_input_is_available(&self) -> bool {
+        self.agent_state == AgentState::Idle
+            && self.tree_ui.is_none()
+            && self.session_picker.is_none()
+            && self.settings_ui.is_none()
+            && self.theme_picker.is_none()
+            && self.capability_prompt.is_none()
+            && self.extension_custom_overlay.is_none()
+            && self.branch_picker.is_none()
+            && self.model_selector.is_none()
+    }
+
+    /// Return whether a custom extension overlay should currently receive
+    /// keyboard input.
+    ///
+    /// Higher-priority modal overlays must win when they are present;
+    /// otherwise the prompt renders but can never be answered.
+    const fn custom_overlay_input_is_available(&self) -> bool {
+        self.extension_custom_active
+            && self.tree_ui.is_none()
+            && self.session_picker.is_none()
+            && self.settings_ui.is_none()
+            && self.theme_picker.is_none()
+            && self.capability_prompt.is_none()
+            && self.branch_picker.is_none()
+            && self.model_selector.is_none()
+    }
+
+    /// Approximate how many rows the custom extension overlay renders.
+    ///
+    /// `render_extension_custom_overlay()` emits:
+    /// - a leading blank spacer row plus the title row
+    /// - the source row
+    /// - either the waiting line or the visible frame tail
+    /// - the help row
+    fn extension_custom_overlay_rows(&self) -> usize {
+        let Some(overlay) = self.extension_custom_overlay.as_ref() else {
+            return 0;
+        };
+
+        let max_lines = self.term_height.saturating_sub(12).max(4);
+        let visible_lines = overlay.lines.len().min(max_lines).max(1);
+        4 + visible_lines
+    }
+
     /// Compute the effective conversation viewport height for the current
     /// render frame, accounting for conditional chrome (scroll indicator,
     /// tool status, status message) that reduce available space.
@@ -787,6 +836,9 @@ impl PiApp {
             chrome += 8;
         }
 
+        // Custom extension overlay: spacer + title + source + content/help.
+        chrome += self.extension_custom_overlay_rows();
+
         // Branch picker overlay: header + N visible branches + help line + padding.
         if let Some(ref picker) = self.branch_picker {
             let visible = picker.branches.len().min(picker.max_visible);
@@ -794,15 +846,7 @@ impl PiApp {
         }
 
         // Input area vs processing spinner.
-        let show_input = self.agent_state == AgentState::Idle
-            && self.session_picker.is_none()
-            && self.settings_ui.is_none()
-            && self.theme_picker.is_none()
-            && self.capability_prompt.is_none()
-            && self.branch_picker.is_none()
-            && self.model_selector.is_none();
-
-        if show_input {
+        if self.editor_input_is_available() {
             // render_input: "\n  header\n" (2 rows) + input.height() rows.
             chrome += 2 + self.input.height();
 

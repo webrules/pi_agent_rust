@@ -1901,4 +1901,73 @@ mod stream_delta_batcher_tests {
         assert!(!app.extension_custom_active);
         assert!(app.extension_custom_key_queue.is_empty());
     }
+
+    #[test]
+    fn custom_overlay_reduces_conversation_height_budget() {
+        let mut app = build_test_app();
+        app.term_height = 24;
+
+        let idle_height = app.view_effective_conversation_height();
+
+        app.extension_custom_overlay = Some(ExtensionCustomOverlay {
+            extension_id: Some("snake".to_string()),
+            title: Some("Snake".to_string()),
+            lines: vec![
+                "score: 1".to_string(),
+                "score: 2".to_string(),
+                "score: 3".to_string(),
+                "score: 4".to_string(),
+                "score: 5".to_string(),
+                "score: 6".to_string(),
+            ],
+        });
+
+        assert!(
+            !app.editor_input_is_available(),
+            "custom overlays should hide the normal editor input"
+        );
+        assert!(
+            app.view_effective_conversation_height() < idle_height,
+            "custom overlay rows must shrink the conversation viewport budget"
+        );
+    }
+
+    #[test]
+    fn capability_prompt_takes_key_priority_over_custom_overlay() {
+        let mut app = build_test_app();
+        let poll_request = ExtensionUiRequest::new(
+            "req-poll",
+            "custom",
+            json!({ "title": "Snake", "overlay": true }),
+        )
+        .with_extension_id(Some("snake".to_string()));
+        app.handle_custom_extension_ui_request(poll_request);
+
+        let capability_request = ExtensionUiRequest::new(
+            "req-cap",
+            "confirm",
+            json!({
+                "extension_id": "snake",
+                "capability": "exec",
+                "message": "Needs shell access",
+            }),
+        )
+        .with_extension_id(Some("snake".to_string()));
+        app.capability_prompt = Some(CapabilityPromptOverlay::from_request(capability_request));
+
+        let _ = app.update(Message::new(KeyMsg::from_type(KeyType::Right)));
+
+        let prompt = app
+            .capability_prompt
+            .as_ref()
+            .expect("capability prompt should remain active");
+        assert_eq!(
+            prompt.focused, 1,
+            "Right arrow should move capability prompt focus instead of being swallowed by the custom overlay"
+        );
+        assert!(
+            app.extension_custom_key_queue.is_empty(),
+            "modal prompt keys must not leak into the custom overlay key queue"
+        );
+    }
 }

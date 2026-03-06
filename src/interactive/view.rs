@@ -503,15 +503,7 @@ impl PiApp {
         }
 
         // Input area (only when idle and no overlay open)
-        if self.agent_state == AgentState::Idle
-            && self.session_picker.is_none()
-            && self.settings_ui.is_none()
-            && self.theme_picker.is_none()
-            && self.capability_prompt.is_none()
-            && self.extension_custom_overlay.is_none()
-            && self.branch_picker.is_none()
-            && self.model_selector.is_none()
-        {
+        if self.editor_input_is_available() {
             output.push_str(&self.render_input());
 
             // Autocomplete dropdown (if open)

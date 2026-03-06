@@ -3,7 +3,7 @@ use super::*;
 
 impl PiApp {
     pub(super) fn handle_custom_extension_key(&mut self, key: &KeyMsg) -> bool {
-        if !self.extension_custom_active {
+        if !self.custom_overlay_input_is_available() {
             return false;
         }
         if key.key_type == KeyType::CtrlC {
