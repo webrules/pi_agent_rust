@@ -1039,13 +1039,11 @@ impl SessionStoreV2 {
                             segment = %seg_path.display(),
                             line_number,
                             error = %e,
-                            "SessionStoreV2 encountered oversized line during index rebuild; truncating segment and dropping subsequent segments"
+                            "SessionStoreV2 encountered oversized line during index rebuild; truncating segment and quarantining subsequent segments"
                         );
                         drop(reader);
                         truncate_file_to(seg_path, byte_offset)?;
-                        for (_, path) in &segment_files[i + 1..] {
-                            let _ = fs::remove_file(path);
-                        }
+                        quarantine_segment_tail(&segment_files[i + 1..])?;
                         break 'segments;
                     }
                     Err(e) => return Err(Error::Io(Box::new(e))),
@@ -1089,14 +1087,12 @@ impl SessionStoreV2 {
                             error = %err,
                             at_eof,
                             missing_newline,
-                            "SessionStoreV2 dropping corrupted frame during index rebuild; truncating segment and dropping subsequent segments"
+                            "SessionStoreV2 dropping corrupted frame during index rebuild; truncating segment and quarantining subsequent segments"
                         );
                         // Trim the incomplete tail so subsequent reads and appends remain valid.
                         drop(reader);
                         truncate_file_to(seg_path, byte_offset)?;
-                        for (_, path) in &segment_files[i + 1..] {
-                            let _ = fs::remove_file(path);
-                        }
+                        quarantine_segment_tail(&segment_files[i + 1..])?;
                         break 'segments;
                     }
                 };
@@ -1107,13 +1103,11 @@ impl SessionStoreV2 {
                         line_number,
                         entry_seq = frame.entry_seq,
                         last_seq = last_observed_seq,
-                        "SessionStoreV2 detected non-monotonic entry sequence during rebuild; truncating segment and dropping subsequent segments"
+                        "SessionStoreV2 detected non-monotonic entry sequence during rebuild; truncating segment and quarantining subsequent segments"
                     );
                     drop(reader);
                     truncate_file_to(seg_path, byte_offset)?;
-                    for (_, path) in &segment_files[i + 1..] {
-                        let _ = fs::remove_file(path);
-                    }
+                    quarantine_segment_tail(&segment_files[i + 1..])?;
                     break 'segments;
                 }
                 last_observed_seq = frame.entry_seq;
@@ -1521,6 +1515,54 @@ fn truncate_file_to(path: &Path, len: u64) -> Result<()> {
     Ok(())
 }
 
+fn quarantine_segment_file(path: &Path) -> Result<PathBuf> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| Error::session(format!("segment has no parent: {}", path.display())))?;
+    let file_name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .ok_or_else(|| Error::session(format!("segment has no filename: {}", path.display())))?;
+
+    for suffix in 0u32..10_000 {
+        let backup_name = if suffix == 0 {
+            format!("{file_name}.bak")
+        } else {
+            format!("{file_name}.bak.{suffix}")
+        };
+        let backup_path = parent.join(backup_name);
+        if backup_path.exists() {
+            continue;
+        }
+
+        fs::rename(path, &backup_path).map_err(|err| {
+            Error::session(format!(
+                "failed to quarantine segment {} -> {}: {err}",
+                path.display(),
+                backup_path.display()
+            ))
+        })?;
+        return Ok(backup_path);
+    }
+
+    Err(Error::session(format!(
+        "failed to quarantine segment {}: exhausted backup suffixes",
+        path.display()
+    )))
+}
+
+fn quarantine_segment_tail(segment_files: &[(u64, PathBuf)]) -> Result<()> {
+    for (_, path) in segment_files {
+        let backup_path = quarantine_segment_file(path)?;
+        tracing::warn!(
+            segment = %path.display(),
+            backup = %backup_path.display(),
+            "SessionStoreV2 quarantined trailing segment during rebuild"
+        );
+    }
+    Ok(())
+}
+
 fn write_jsonl_lines<T: Serialize>(path: &Path, rows: &[T]) -> Result<()> {
     let file = secure_open_options()
         .create(true)
@@ -1609,6 +1651,38 @@ mod proptests {
     use super::*;
     use proptest::prelude::*;
     use serde_json::json;
+    use std::fs;
+
+    #[test]
+    fn quarantine_segment_file_moves_segment_to_backup() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let segment = tmp.path().join("0000000000000002.seg");
+        fs::write(&segment, b"hello").expect("write segment");
+
+        let backup = quarantine_segment_file(&segment).expect("quarantine segment");
+
+        assert_eq!(backup, tmp.path().join("0000000000000002.seg.bak"));
+        assert!(!segment.exists(), "original segment should be moved away");
+        assert_eq!(fs::read(&backup).expect("read backup"), b"hello");
+    }
+
+    #[test]
+    fn quarantine_segment_file_uses_next_available_backup_suffix() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let segment = tmp.path().join("0000000000000002.seg");
+        let existing_backup = tmp.path().join("0000000000000002.seg.bak");
+        fs::write(&segment, b"new").expect("write segment");
+        fs::write(&existing_backup, b"old").expect("write existing backup");
+
+        let backup = quarantine_segment_file(&segment).expect("quarantine segment");
+
+        assert_eq!(backup, tmp.path().join("0000000000000002.seg.bak.1"));
+        assert_eq!(
+            fs::read(&existing_backup).expect("read existing backup"),
+            b"old"
+        );
+        assert_eq!(fs::read(&backup).expect("read new backup"), b"new");
+    }
 
     // ====================================================================
     // chain_hash_step
