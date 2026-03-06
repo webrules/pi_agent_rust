@@ -3841,13 +3841,16 @@ async fn run_print_mode(
         bail!("No input provided. Use: pi -p \"your message\" or pipe input via stdin");
     }
 
-    let mut last_message: Option<AssistantMessage> = None;
+    let text_stream_state = Arc::new(StdMutex::new(PrintTextStreamState::default()));
     let extensions = session.extensions.as_ref().map(|r| r.manager().clone());
     let emit_json_events = mode == "json";
+    let stream_text_events = mode == "text";
     let runtime_for_events = runtime_handle.clone();
+    let text_stream_state_for_events = Arc::clone(&text_stream_state);
     let make_event_handler = move || {
         let extensions = extensions.clone();
         let runtime_for_events = runtime_for_events.clone();
+        let text_stream_state = Arc::clone(&text_stream_state_for_events);
         let coalescer = extensions
             .as_ref()
             .map(|m| pi::extensions::EventCoalescer::new(m.clone()));
@@ -3856,6 +3859,14 @@ async fn run_print_mode(
                 if let Ok(serialized) = serde_json::to_string(&event) {
                     println!("{serialized}");
                 }
+            } else if stream_text_events
+                && let Some(delta) = streamed_text_delta(&event)
+                && emit_text_delta(delta).is_ok()
+            {
+                let mut guard = text_stream_state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                guard.observe_delta(delta);
             }
             // Route non-lifecycle events through the coalescer for
             // batched/coalesced dispatch with lazy serialization.
@@ -3885,63 +3896,156 @@ async fn run_print_mode(
     let retry_enabled = config.retry_enabled();
     let max_retries = config.retry_max_retries();
     let is_json = mode == "json";
+    let mut sent_prompts = 0usize;
 
     if let Some(initial) = initial {
         let content = pi::app::build_initial_content(&initial);
-        last_message = Some(
-            run_print_prompt_with_retry(
-                session,
-                config,
-                &abort_signal,
-                &make_event_handler,
-                retry_enabled,
-                max_retries,
-                is_json,
-                PromptInput::Content(content),
-            )
-            .await?,
-        );
+        reset_print_text_stream_state(&text_stream_state);
+        let message = run_print_prompt_with_retry(
+            session,
+            config,
+            &abort_signal,
+            &make_event_handler,
+            retry_enabled,
+            max_retries,
+            is_json,
+            &text_stream_state,
+            PromptInput::Content(content),
+        )
+        .await?;
+        sent_prompts = sent_prompts.saturating_add(1);
+        if mode == "text" {
+            finish_print_text_response(
+                &message,
+                snapshot_print_text_stream_state(&text_stream_state),
+            )?;
+        }
     }
 
     for message in messages {
-        last_message = Some(
-            run_print_prompt_with_retry(
-                session,
-                config,
-                &abort_signal,
-                &make_event_handler,
-                retry_enabled,
-                max_retries,
-                is_json,
-                PromptInput::Text(message),
-            )
-            .await?,
-        );
+        reset_print_text_stream_state(&text_stream_state);
+        let response = run_print_prompt_with_retry(
+            session,
+            config,
+            &abort_signal,
+            &make_event_handler,
+            retry_enabled,
+            max_retries,
+            is_json,
+            &text_stream_state,
+            PromptInput::Text(message),
+        )
+        .await?;
+        sent_prompts = sent_prompts.saturating_add(1);
+        if mode == "text" {
+            finish_print_text_response(
+                &response,
+                snapshot_print_text_stream_state(&text_stream_state),
+            )?;
+        }
     }
 
-    let Some(last_message) = last_message else {
+    if sent_prompts == 0 {
         if mode == "json" {
             io::stdout().flush()?;
             return Ok(());
         }
         bail!("No messages were sent");
-    };
+    }
 
-    if mode == "text" {
-        if matches!(
-            last_message.stop_reason,
-            StopReason::Error | StopReason::Aborted
-        ) {
-            let message = last_message
-                .error_message
-                .unwrap_or_else(|| "Request error".to_string());
-            bail!(message);
+    io::stdout().flush()?;
+    Ok(())
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct PrintTextStreamState {
+    streamed_text: bool,
+    ends_with_newline: bool,
+}
+
+impl PrintTextStreamState {
+    fn observe_delta(&mut self, delta: &str) {
+        if delta.is_empty() {
+            return;
         }
+        self.streamed_text = true;
+        self.ends_with_newline = delta.ends_with('\n');
+    }
+
+    const fn should_render_final_message(self) -> bool {
+        !self.streamed_text
+    }
+
+    const fn can_retry(self, is_json: bool) -> bool {
+        is_json || !self.streamed_text
+    }
+
+    const fn needs_trailing_newline(self) -> bool {
+        self.streamed_text && !self.ends_with_newline
+    }
+}
+
+fn streamed_text_delta(event: &AgentEvent) -> Option<&str> {
+    match event {
+        AgentEvent::MessageUpdate {
+            assistant_message_event: pi::model::AssistantMessageEvent::TextDelta { delta, .. },
+            ..
+        } => Some(delta.as_str()),
+        _ => None,
+    }
+}
+
+fn emit_text_delta(delta: &str) -> io::Result<()> {
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
+    out.write_all(delta.as_bytes())?;
+    out.flush()
+}
+
+fn emit_trailing_print_newline(state: PrintTextStreamState) -> io::Result<()> {
+    if !state.needs_trailing_newline() {
+        return Ok(());
+    }
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
+    out.write_all(b"\n")?;
+    out.flush()
+}
+
+fn snapshot_print_text_stream_state(
+    state: &Arc<StdMutex<PrintTextStreamState>>,
+) -> PrintTextStreamState {
+    *state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+fn reset_print_text_stream_state(state: &Arc<StdMutex<PrintTextStreamState>>) {
+    let mut guard = state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    *guard = PrintTextStreamState::default();
+}
+
+fn finish_print_text_response(
+    message: &AssistantMessage,
+    stream_state: PrintTextStreamState,
+) -> Result<()> {
+    if matches!(message.stop_reason, StopReason::Error | StopReason::Aborted) {
+        emit_trailing_print_newline(stream_state)?;
+        let error_message = message
+            .error_message
+            .clone()
+            .unwrap_or_else(|| "Request error".to_string());
+        bail!(error_message);
+    }
+
+    if stream_state.should_render_final_message() {
         // When stdout is a terminal, render markdown with formatting.
         // When piped, emit plain text via output_final_text to avoid escape codes.
         if std::io::IsTerminal::is_terminal(&io::stdout()) {
             let mut markdown = String::new();
-            for block in &last_message.content {
+            for block in &message.content {
                 if let ContentBlock::Text(text) = block {
                     markdown.push_str(&text.text);
                     if !markdown.ends_with('\n') {
@@ -3955,11 +4059,12 @@ async fn run_print_mode(
                 console.render_markdown(&markdown);
             }
         } else {
-            pi::app::output_final_text(&last_message);
+            pi::app::output_final_text(message);
         }
+        return Ok(());
     }
 
-    io::stdout().flush()?;
+    emit_trailing_print_newline(stream_state)?;
     Ok(())
 }
 
@@ -4006,6 +4111,7 @@ async fn run_print_prompt_with_retry<H, EH>(
     retry_enabled: bool,
     max_retries: u32,
     is_json: bool,
+    text_stream_state: &Arc<StdMutex<PrintTextStreamState>>,
     input: PromptInput,
 ) -> Result<AssistantMessage>
 where
@@ -4054,7 +4160,11 @@ where
                 }
                 return Ok(msg);
             }
-            Ok(msg) if is_retryable_prompt_result(&msg) && retry_count < max_retries => {
+            Ok(msg)
+                if is_retryable_prompt_result(&msg)
+                    && retry_count < max_retries
+                    && snapshot_print_text_stream_state(text_stream_state).can_retry(is_json) =>
+            {
                 let err_msg = msg
                     .error_message
                     .clone()
@@ -4120,7 +4230,9 @@ where
             }
             Err(err) => {
                 let err_str = err.to_string();
-                if retry_count < max_retries && pi::error::is_retryable_error(&err_str, None, None)
+                if retry_count < max_retries
+                    && pi::error::is_retryable_error(&err_str, None, None)
+                    && snapshot_print_text_stream_state(text_stream_state).can_retry(is_json)
                 {
                     retry_count += 1;
                     let delay_ms = print_mode_retry_delay_ms(config, retry_count);
@@ -4138,6 +4250,11 @@ where
                         Duration::from_millis(u64::from(delay_ms)),
                     )
                     .await;
+
+                    // Revert the failed user message before retrying to prevent context
+                    // duplication when the provider fails before emitting an assistant
+                    // message.
+                    let _ = session.revert_last_user_message().await;
 
                     current_result = match &input {
                         PromptInput::Text(text) => {
@@ -4883,5 +5000,62 @@ mod tests {
         let json = serde_json::to_value(&end).unwrap();
         assert_eq!(json["type"], "auto_retry_end");
         assert!(json["success"].as_bool().unwrap());
+    }
+
+    #[test]
+    fn streamed_text_delta_only_matches_text_delta_updates() {
+        let partial = Arc::new(AssistantMessage {
+            content: vec![ContentBlock::Text(pi::model::TextContent::new("hello"))],
+            api: "test-api".to_string(),
+            provider: "test-provider".to_string(),
+            model: "test-model".to_string(),
+            usage: pi::model::Usage::default(),
+            stop_reason: StopReason::Stop,
+            error_message: None,
+            timestamp: 0,
+        });
+        let delta_event = AgentEvent::MessageUpdate {
+            message: pi::model::Message::Assistant(Arc::clone(&partial)),
+            assistant_message_event: pi::model::AssistantMessageEvent::TextDelta {
+                content_index: 0,
+                delta: " world".to_string(),
+                partial,
+            },
+        };
+        assert_eq!(streamed_text_delta(&delta_event), Some(" world"));
+
+        let start_event = AgentEvent::MessageStart {
+            message: pi::model::Message::assistant(AssistantMessage {
+                content: Vec::new(),
+                api: "test-api".to_string(),
+                provider: "test-provider".to_string(),
+                model: "test-model".to_string(),
+                usage: pi::model::Usage::default(),
+                stop_reason: StopReason::Stop,
+                error_message: None,
+                timestamp: 0,
+            }),
+        };
+        assert_eq!(streamed_text_delta(&start_event), None);
+    }
+
+    #[test]
+    fn print_text_stream_state_tracks_visibility_newlines_and_retryability() {
+        let mut state = PrintTextStreamState::default();
+        assert!(state.should_render_final_message());
+        assert!(state.can_retry(false));
+        assert!(!state.needs_trailing_newline());
+
+        state.observe_delta("");
+        assert!(state.should_render_final_message());
+
+        state.observe_delta("hello");
+        assert!(!state.should_render_final_message());
+        assert!(!state.can_retry(false));
+        assert!(state.can_retry(true));
+        assert!(state.needs_trailing_newline());
+
+        state.observe_delta(" world\n");
+        assert!(!state.needs_trailing_newline());
     }
 }
