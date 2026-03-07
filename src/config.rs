@@ -502,7 +502,7 @@ impl Config {
             images: merge_images(base.images, other.images),
 
             // Markdown rendering
-            markdown: other.markdown.or(base.markdown),
+            markdown: merge_markdown(base.markdown, other.markdown),
 
             // Terminal Display
             terminal: merge_terminal(base.terminal, other.terminal),
@@ -1064,6 +1064,20 @@ fn merge_retry(base: Option<RetrySettings>, other: Option<RetrySettings>) -> Opt
             max_retries: other.max_retries.or(base.max_retries),
             base_delay_ms: other.base_delay_ms.or(base.base_delay_ms),
             max_delay_ms: other.max_delay_ms.or(base.max_delay_ms),
+        }),
+        (None, Some(other)) => Some(other),
+        (Some(base), None) => Some(base),
+        (None, None) => None,
+    }
+}
+
+fn merge_markdown(
+    base: Option<MarkdownSettings>,
+    other: Option<MarkdownSettings>,
+) -> Option<MarkdownSettings> {
+    match (base, other) {
+        (Some(base), Some(other)) => Some(MarkdownSettings {
+            code_block_indent: other.code_block_indent.or(base.code_block_indent),
         }),
         (None, Some(other)) => Some(other),
         (Some(base), None) => Some(base),
