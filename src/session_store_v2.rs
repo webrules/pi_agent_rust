@@ -594,9 +594,6 @@ impl SessionStoreV2 {
                     frames.push(frame);
                 }
                 None => {
-                    if frames.is_empty() {
-                        break;
-                    }
                     return Err(Error::session(format!(
                         "index references missing frame while reading active path at entry_id={entry_id}"
                     )));
@@ -1672,6 +1669,7 @@ fn truncate_file_to(path: &Path, len: u64) -> Result<()> {
         .truncate(false)
         .open(path)?;
     file.set_len(len)?;
+    file.sync_all()?;
     Ok(())
 }
 

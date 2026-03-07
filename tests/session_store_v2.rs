@@ -482,6 +482,26 @@ fn read_active_path_errors_on_duplicate_entry_ids() -> PiResult<()> {
 }
 
 #[test]
+fn read_active_path_errors_on_missing_leaf_frame() -> PiResult<()> {
+    let dir = tempdir()?;
+    let mut store = SessionStoreV2::create(dir.path(), 4 * 1024)?;
+    store.append_entry("A", None, "message", json!({"v":"A"}))?;
+    store.append_entry("B", Some("A".to_string()), "message", json!({"v":"B"}))?;
+
+    let index_path = store.index_file_path();
+    let mut rows = read_index_json_rows(&index_path)?;
+    assert_eq!(rows.len(), 2);
+    rows[1]["segmentSeq"] = Value::from(999_u64);
+    write_index_json_rows(&index_path, &rows)?;
+
+    let err = store
+        .read_active_path("B")
+        .expect_err("missing indexed leaf frame must fail");
+    assert!(err.to_string().contains("index references missing frame"));
+    Ok(())
+}
+
+#[test]
 fn read_active_path_errors_on_missing_parent_reference() -> PiResult<()> {
     let dir = tempdir()?;
     let mut store = SessionStoreV2::create(dir.path(), 4 * 1024)?;
