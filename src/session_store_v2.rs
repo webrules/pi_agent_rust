@@ -573,7 +573,14 @@ impl SessionStoreV2 {
             let row = id_to_row.get(entry_id.as_str());
             let row = match row {
                 Some(r) => *r,
-                None => break,
+                None => {
+                    if frames.is_empty() {
+                        break;
+                    }
+                    return Err(Error::session(format!(
+                        "missing parent entry detected while reading active path at entry_id={entry_id}"
+                    )));
+                }
             };
             match reader.read_frame(row)? {
                 Some(frame) => {
@@ -586,7 +593,14 @@ impl SessionStoreV2 {
                     current_id.clone_from(&frame.parent_entry_id);
                     frames.push(frame);
                 }
-                None => break,
+                None => {
+                    if frames.is_empty() {
+                        break;
+                    }
+                    return Err(Error::session(format!(
+                        "index references missing frame while reading active path at entry_id={entry_id}"
+                    )));
+                }
             }
         }
         frames.reverse();

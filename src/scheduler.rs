@@ -1743,7 +1743,7 @@ impl<C: Clock> fmt::Debug for Scheduler<C> {
         f.debug_struct("Scheduler")
             .field("seq", &self.seq)
             .field("macrotask_count", &self.macrotask_queue.len())
-            .field("timer_count", &self.timer_heap.len())
+            .field("timer_count", &self.timer_count())
             .field("next_timer_id", &self.next_timer_id)
             .field("cancelled_timers", &self.cancelled_timers.len())
             .finish_non_exhaustive()
@@ -2173,6 +2173,25 @@ mod tests {
         let debug = format!("{sched:?}");
         assert!(debug.contains("Scheduler"));
         assert!(debug.contains("seq"));
+    }
+
+    #[test]
+    fn scheduler_debug_reports_live_timer_count() {
+        let mut sched = Scheduler::with_clock(DeterministicClock::new(0));
+        let cancelled = sched.set_timeout(10);
+        sched.set_timeout(20);
+
+        assert!(sched.clear_timeout(cancelled));
+
+        let debug = format!("{sched:?}");
+        assert!(
+            debug.contains("timer_count: 1"),
+            "unexpected debug: {debug}"
+        );
+        assert!(
+            debug.contains("cancelled_timers: 1"),
+            "unexpected debug: {debug}"
+        );
     }
 
     #[derive(Debug, Clone)]
