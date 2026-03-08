@@ -251,7 +251,7 @@ impl TmuxWheelGuard {
     /// Restore the original binding for a wheel direction, or unbind if there
     /// was no previous binding.
     fn restore_binding(saved: &Option<String>, key_name: &str) {
-        if let Some(ref line) = saved {
+        if let Some(line) = saved {
             // Try to re-execute the original bind-key line.
             // The saved line is a full `bind-key -T root ...` command.
             let parts: Vec<&str> = line.split_whitespace().collect();
