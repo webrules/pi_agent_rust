@@ -43,40 +43,33 @@ fn normalize_role(role: &str) -> String {
     }
 }
 
-fn first_header_value_case_insensitive<'a>(
-    headers: &'a std::collections::HashMap<String, String>,
-    name: &str,
-) -> Option<&'a str> {
-    headers
-        .iter()
-        .find_map(|(key, value)| key.eq_ignore_ascii_case(name).then_some(value.as_str()))
-}
-
 fn authorization_override(
     options: &StreamOptions,
     compat: Option<&CompatConfig>,
 ) -> Option<String> {
-    first_header_value_case_insensitive(&options.headers, "authorization")
+    super::first_non_empty_header_value_case_insensitive(&options.headers, &["authorization"])
         .or_else(|| {
             compat
                 .and_then(|compat| compat.custom_headers.as_ref())
-                .and_then(|headers| first_header_value_case_insensitive(headers, "authorization"))
+                .and_then(|headers| {
+                    super::first_non_empty_header_value_case_insensitive(
+                        headers,
+                        &["authorization"],
+                    )
+                })
         })
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToString::to_string)
 }
 
 fn api_key_override(options: &StreamOptions, compat: Option<&CompatConfig>) -> Option<String> {
-    first_header_value_case_insensitive(&options.headers, "api-key")
-        .or_else(|| {
+    super::first_non_empty_header_value_case_insensitive(&options.headers, &["api-key"]).or_else(
+        || {
             compat
                 .and_then(|compat| compat.custom_headers.as_ref())
-                .and_then(|headers| first_header_value_case_insensitive(headers, "api-key"))
-        })
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToString::to_string)
+                .and_then(|headers| {
+                    super::first_non_empty_header_value_case_insensitive(headers, &["api-key"])
+                })
+        },
+    )
 }
 
 // ============================================================================
@@ -257,15 +250,19 @@ impl Provider for AzureOpenAIProvider {
         // Apply provider-specific custom headers from compat config.
         if let Some(compat) = &self.compat {
             if let Some(custom_headers) = &compat.custom_headers {
-                for (key, value) in custom_headers {
-                    request = request.header(key, value);
-                }
+                request = super::apply_headers_ignoring_blank_auth_overrides(
+                    request,
+                    custom_headers,
+                    &["authorization", "api-key"],
+                );
             }
         }
 
-        for (key, value) in &options.headers {
-            request = request.header(key, value);
-        }
+        request = super::apply_headers_ignoring_blank_auth_overrides(
+            request,
+            &options.headers,
+            &["authorization", "api-key"],
+        );
 
         let request = request.json(&request_body)?;
 
@@ -1278,6 +1275,50 @@ mod tests {
         );
         let body: Value = serde_json::from_str(&captured.body).expect("body json");
         assert_eq!(body["stream"], true);
+    }
+
+    #[test]
+    fn test_blank_compat_api_key_header_does_not_override_builtin_api_key() {
+        let (base_url, rx) = spawn_test_server(200, "text/event-stream", &success_sse_body());
+        let mut custom_headers = HashMap::new();
+        custom_headers.insert("api-key".to_string(), "   ".to_string());
+        let provider = AzureOpenAIProvider::new("contoso", "gpt-4o")
+            .with_endpoint_url(base_url)
+            .with_compat(Some(CompatConfig {
+                custom_headers: Some(custom_headers),
+                ..CompatConfig::default()
+            }));
+        let context = Context {
+            system_prompt: None,
+            messages: vec![Message::User(UserMessage {
+                content: UserContent::Text("ping".to_string()),
+                timestamp: 0,
+            })]
+            .into(),
+            tools: Vec::new().into(),
+        };
+        let options = StreamOptions {
+            api_key: Some("fallback-azure-key".to_string()),
+            ..Default::default()
+        };
+
+        let runtime = RuntimeBuilder::current_thread()
+            .build()
+            .expect("runtime build");
+        runtime.block_on(async {
+            let mut stream = provider.stream(&context, &options).await.expect("stream");
+            while let Some(event) = stream.next().await {
+                if matches!(event.expect("stream event"), StreamEvent::Done { .. }) {
+                    break;
+                }
+            }
+        });
+
+        let captured = rx.recv_timeout(Duration::from_secs(2)).expect("captured");
+        assert_eq!(
+            captured.headers.get("api-key").map(String::as_str),
+            Some("fallback-azure-key")
+        );
     }
 
     fn load_fixture(file_name: &str) -> ProviderFixture {

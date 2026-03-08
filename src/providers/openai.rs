@@ -57,33 +57,21 @@ fn map_has_any_header(headers: &std::collections::HashMap<String, String>, names
         .any(|key| names.iter().any(|name| key.eq_ignore_ascii_case(name)))
 }
 
-fn first_header_value_case_insensitive<'a>(
-    headers: &'a std::collections::HashMap<String, String>,
-    names: &[&str],
-) -> Option<&'a str> {
-    headers.iter().find_map(|(key, value)| {
-        names
-            .iter()
-            .any(|name| key.eq_ignore_ascii_case(name))
-            .then_some(value.as_str())
-    })
-}
-
 fn authorization_override(
     options: &StreamOptions,
     compat: Option<&CompatConfig>,
 ) -> Option<String> {
-    first_header_value_case_insensitive(&options.headers, &["authorization"])
+    super::first_non_empty_header_value_case_insensitive(&options.headers, &["authorization"])
         .or_else(|| {
             compat
                 .and_then(|compat| compat.custom_headers.as_ref())
                 .and_then(|headers| {
-                    first_header_value_case_insensitive(headers, &["authorization"])
+                    super::first_non_empty_header_value_case_insensitive(
+                        headers,
+                        &["authorization"],
+                    )
                 })
         })
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToString::to_string)
 }
 
 fn first_non_empty_env(keys: &[&str]) -> Option<String> {
@@ -366,16 +354,20 @@ impl Provider for OpenAIProvider {
         // Apply provider-specific custom headers from compat config.
         if let Some(compat) = &self.compat {
             if let Some(custom_headers) = &compat.custom_headers {
-                for (key, value) in custom_headers {
-                    request = request.header(key, value);
-                }
+                request = super::apply_headers_ignoring_blank_auth_overrides(
+                    request,
+                    custom_headers,
+                    &["authorization"],
+                );
             }
         }
 
         // Per-request headers from StreamOptions (highest priority).
-        for (key, value) in &options.headers {
-            request = request.header(key, value);
-        }
+        request = super::apply_headers_ignoring_blank_auth_overrides(
+            request,
+            &options.headers,
+            &["authorization"],
+        );
 
         let request = request.json(&request_body)?;
 
@@ -2179,6 +2171,27 @@ mod tests {
         assert_eq!(
             captured.headers.get("authorization").map(String::as_str),
             Some("Bearer compat-openai-token")
+        );
+    }
+
+    #[test]
+    fn blank_compat_authorization_header_does_not_override_builtin_api_key() {
+        let mut custom = HashMap::new();
+        custom.insert("Authorization".to_string(), "   ".to_string());
+        let provider = OpenAIProvider::new("gpt-4o").with_compat(Some(CompatConfig {
+            custom_headers: Some(custom),
+            ..Default::default()
+        }));
+        let options = StreamOptions {
+            api_key: Some("test-openai-key".to_string()),
+            ..Default::default()
+        };
+
+        let captured =
+            run_stream_and_capture_headers_with(provider, &options).expect("captured request");
+        assert_eq!(
+            captured.headers.get("authorization").map(String::as_str),
+            Some("Bearer test-openai-key")
         );
     }
 

@@ -178,28 +178,21 @@ fn bearer_token_from_authorization_header(value: &str) -> Option<String> {
     }
 }
 
-fn first_header_value_case_insensitive<'a>(
-    headers: &'a HashMap<String, String>,
-    name: &str,
-) -> Option<&'a str> {
-    headers
-        .iter()
-        .find_map(|(key, value)| key.eq_ignore_ascii_case(name).then_some(value.as_str()))
-}
-
 fn authorization_override(
     options: &StreamOptions,
     compat: Option<&CompatConfig>,
 ) -> Option<String> {
-    first_header_value_case_insensitive(&options.headers, "authorization")
+    super::first_non_empty_header_value_case_insensitive(&options.headers, &["authorization"])
         .or_else(|| {
             compat
                 .and_then(|compat| compat.custom_headers.as_ref())
-                .and_then(|headers| first_header_value_case_insensitive(headers, "authorization"))
+                .and_then(|headers| {
+                    super::first_non_empty_header_value_case_insensitive(
+                        headers,
+                        &["authorization"],
+                    )
+                })
         })
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToString::to_string)
 }
 
 #[async_trait]
@@ -284,16 +277,20 @@ impl Provider for OpenAIResponsesProvider {
         // Apply provider-specific custom headers from compat config.
         if let Some(compat) = &self.compat {
             if let Some(custom_headers) = &compat.custom_headers {
-                for (key, value) in custom_headers {
-                    request = request.header(key, value);
-                }
+                request = super::apply_headers_ignoring_blank_auth_overrides(
+                    request,
+                    custom_headers,
+                    &["authorization"],
+                );
             }
         }
 
         // Per-request headers from StreamOptions (highest priority).
-        for (key, value) in &options.headers {
-            request = request.header(key, value);
-        }
+        request = super::apply_headers_ignoring_blank_auth_overrides(
+            request,
+            &options.headers,
+            &["authorization"],
+        );
 
         let request = request.json(&request_body)?;
 

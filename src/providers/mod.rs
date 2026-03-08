@@ -5,7 +5,7 @@
 
 use crate::error::{Error, Result};
 use crate::extensions::{ExtensionManager, ExtensionRuntimeHandle};
-use crate::http::client::Client;
+use crate::http::client::{Client, RequestBuilder};
 use crate::model::{
     AssistantMessage, AssistantMessageEvent, ContentBlock, StopReason, TextContent, Usage,
 };
@@ -20,6 +20,7 @@ use chrono::Utc;
 use futures::stream;
 use futures::stream::Stream;
 use serde_json::Value;
+use std::collections::HashMap;
 use std::env;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -35,6 +36,36 @@ pub mod gitlab;
 pub mod openai;
 pub mod openai_responses;
 pub mod vertex;
+
+pub(super) fn first_non_empty_header_value_case_insensitive(
+    headers: &HashMap<String, String>,
+    names: &[&str],
+) -> Option<String> {
+    headers.iter().find_map(|(key, value)| {
+        names
+            .iter()
+            .any(|name| key.eq_ignore_ascii_case(name))
+            .then_some(value.trim())
+            .filter(|value| !value.is_empty())
+            .map(ToString::to_string)
+    })
+}
+
+pub(super) fn apply_headers_ignoring_blank_auth_overrides<'a>(
+    mut request: RequestBuilder<'a>,
+    headers: &HashMap<String, String>,
+    auth_names: &[&str],
+) -> RequestBuilder<'a> {
+    for (key, value) in headers {
+        let is_blank_auth_override =
+            auth_names.iter().any(|name| key.eq_ignore_ascii_case(name)) && value.trim().is_empty();
+        if is_blank_auth_override {
+            continue;
+        }
+        request = request.header(key, value);
+    }
+    request
+}
 
 fn vcr_client_if_enabled() -> Result<Option<Client>> {
     if env::var(VCR_ENV_MODE).is_err() {

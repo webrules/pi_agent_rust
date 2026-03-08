@@ -28,43 +28,38 @@ const GOOGLE_GEMINI_CLI_BASE: &str = "https://cloudcode-pa.googleapis.com";
 const GOOGLE_ANTIGRAVITY_BASE: &str = "https://daily-cloudcode-pa.sandbox.googleapis.com";
 pub(crate) const DEFAULT_MAX_TOKENS: u32 = 8192;
 
-fn first_header_value_case_insensitive<'a>(
-    headers: &'a std::collections::HashMap<String, String>,
-    name: &str,
-) -> Option<&'a str> {
-    headers
-        .iter()
-        .find_map(|(key, value)| key.eq_ignore_ascii_case(name).then_some(value.as_str()))
-}
-
 fn authorization_override(
     options: &StreamOptions,
     compat: Option<&CompatConfig>,
 ) -> Option<String> {
-    first_header_value_case_insensitive(&options.headers, "authorization")
+    super::first_non_empty_header_value_case_insensitive(&options.headers, &["authorization"])
         .or_else(|| {
             compat
                 .and_then(|compat| compat.custom_headers.as_ref())
-                .and_then(|headers| first_header_value_case_insensitive(headers, "authorization"))
+                .and_then(|headers| {
+                    super::first_non_empty_header_value_case_insensitive(
+                        headers,
+                        &["authorization"],
+                    )
+                })
         })
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToString::to_string)
 }
 
 fn google_api_key_override(
     options: &StreamOptions,
     compat: Option<&CompatConfig>,
 ) -> Option<String> {
-    first_header_value_case_insensitive(&options.headers, "x-goog-api-key")
+    super::first_non_empty_header_value_case_insensitive(&options.headers, &["x-goog-api-key"])
         .or_else(|| {
             compat
                 .and_then(|compat| compat.custom_headers.as_ref())
-                .and_then(|headers| first_header_value_case_insensitive(headers, "x-goog-api-key"))
+                .and_then(|headers| {
+                    super::first_non_empty_header_value_case_insensitive(
+                        headers,
+                        &["x-goog-api-key"],
+                    )
+                })
         })
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToString::to_string)
 }
 
 // ============================================================================
@@ -341,16 +336,20 @@ impl Provider for GeminiProvider {
             // Apply provider-specific custom headers from compat config.
             if let Some(compat) = &self.compat {
                 if let Some(custom_headers) = &compat.custom_headers {
-                    for (key, value) in custom_headers {
-                        request = request.header(key, value);
-                    }
+                    request = super::apply_headers_ignoring_blank_auth_overrides(
+                        request,
+                        custom_headers,
+                        &["authorization", "x-goog-api-key"],
+                    );
                 }
             }
 
             // Per-request headers from StreamOptions (highest priority).
-            for (key, value) in &options.headers {
-                request = request.header(key, value);
-            }
+            request = super::apply_headers_ignoring_blank_auth_overrides(
+                request,
+                &options.headers,
+                &["authorization", "x-goog-api-key"],
+            );
 
             let cli_request =
                 build_google_cli_request(&self.model, &project_id, request_body, is_antigravity)
@@ -451,16 +450,20 @@ impl Provider for GeminiProvider {
         // Apply provider-specific custom headers from compat config.
         if let Some(compat) = &self.compat {
             if let Some(custom_headers) = &compat.custom_headers {
-                for (key, value) in custom_headers {
-                    request = request.header(key, value);
-                }
+                request = super::apply_headers_ignoring_blank_auth_overrides(
+                    request,
+                    custom_headers,
+                    &["authorization", "x-goog-api-key"],
+                );
             }
         }
 
         // Per-request headers from StreamOptions (highest priority).
-        for (key, value) in &options.headers {
-            request = request.header(key, value);
-        }
+        request = super::apply_headers_ignoring_blank_auth_overrides(
+            request,
+            &options.headers,
+            &["authorization", "x-goog-api-key"],
+        );
 
         let request = request.json(&request_body)?;
 
@@ -1200,6 +1203,47 @@ mod tests {
         assert_eq!(
             captured.headers.get("authorization").map(String::as_str),
             Some("Bearer compat-gemini-token")
+        );
+        let body: Value = serde_json::from_str(&captured.body).expect("body json");
+        assert_eq!(body["contents"][0]["role"], "user");
+    }
+
+    #[test]
+    fn test_blank_request_google_api_key_header_does_not_override_builtin_api_key() {
+        let (base_url, rx) = spawn_test_server(200, "text/event-stream", &success_sse_body());
+        let provider = GeminiProvider::new("gemini-2.0-flash").with_base_url(base_url);
+        let context = Context::owned(
+            None,
+            vec![Message::User(crate::model::UserMessage {
+                content: UserContent::Text("ping".to_string()),
+                timestamp: 0,
+            })],
+            Vec::new(),
+        );
+        let mut headers = HashMap::new();
+        headers.insert("X-Goog-Api-Key".to_string(), "   ".to_string());
+        let options = StreamOptions {
+            api_key: Some("fallback-google-key".to_string()),
+            headers,
+            ..Default::default()
+        };
+
+        let runtime = RuntimeBuilder::current_thread()
+            .build()
+            .expect("runtime build");
+        runtime.block_on(async {
+            let mut stream = provider.stream(&context, &options).await.expect("stream");
+            while let Some(event) = stream.next().await {
+                if matches!(event.expect("stream event"), StreamEvent::Done { .. }) {
+                    break;
+                }
+            }
+        });
+
+        let captured = rx.recv_timeout(Duration::from_secs(2)).expect("captured");
+        assert_eq!(
+            captured.headers.get("x-goog-api-key").map(String::as_str),
+            Some("fallback-google-key")
         );
         let body: Value = serde_json::from_str(&captured.body).expect("body json");
         assert_eq!(body["contents"][0]["role"], "user");
