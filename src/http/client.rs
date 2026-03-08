@@ -27,6 +27,7 @@ const MAX_HEADER_BYTES: usize = 64 * 1024;
 const READ_CHUNK_BYTES: usize = 16 * 1024;
 const MAX_BUFFERED_BYTES: usize = 256 * 1024;
 const MAX_TEXT_BODY_BYTES: usize = 50 * 1024 * 1024;
+#[cfg(not(test))]
 const DEFAULT_REQUEST_TIMEOUT_SECS: u64 = 60;
 
 fn default_request_timeout_from_env() -> Option<std::time::Duration> {
@@ -446,12 +447,14 @@ fn build_request_bytes(
     body: &[u8],
 ) -> Vec<u8> {
     let mut out = String::new();
-    let effective_user_agent = header_value(headers, "user-agent").unwrap_or(user_agent);
+    let effective_user_agent =
+        sanitize_header_value(header_value(headers, "user-agent").unwrap_or(user_agent));
+    let host_header = host_header_value(parsed);
     let _ = std::fmt::Write::write_fmt(
         &mut out,
         format_args!("{} {} HTTP/1.1\r\n", method.as_str(), parsed.path),
     );
-    let _ = std::fmt::Write::write_fmt(&mut out, format_args!("Host: {}\r\n", parsed.host));
+    let _ = std::fmt::Write::write_fmt(&mut out, format_args!("Host: {host_header}\r\n"));
     let _ = std::fmt::Write::write_fmt(
         &mut out,
         format_args!("User-Agent: {effective_user_agent}\r\n"),
@@ -474,6 +477,25 @@ fn build_request_bytes(
 
     out.push_str("\r\n");
     out.into_bytes()
+}
+
+fn host_header_value(parsed: &ParsedUrl) -> String {
+    let host = if parsed.host.contains(':') && !parsed.host.starts_with('[') {
+        format!("[{}]", parsed.host)
+    } else {
+        parsed.host.clone()
+    };
+
+    let default_port = match parsed.scheme {
+        Scheme::Http => 80,
+        Scheme::Https => 443,
+    };
+
+    if parsed.port == default_port {
+        host
+    } else {
+        format!("{host}:{}", parsed.port)
+    }
 }
 
 async fn read_response_head(
@@ -1154,6 +1176,30 @@ mod tests {
         assert!(!text.contains("Content-Length: 999\r\n"));
 
         assert!(text.contains("X-Test: 1\r\n"));
+    }
+
+    #[test]
+    fn build_request_bytes_non_default_port_includes_port_in_host_header() {
+        let parsed = ParsedUrl::parse("http://example.com:8080/api/test").unwrap();
+        let bytes = build_request_bytes(Method::Get, &parsed, "agent", &[], &[]);
+        let text = String::from_utf8(bytes).unwrap();
+
+        assert!(text.contains("Host: example.com:8080\r\n"));
+    }
+
+    #[test]
+    fn build_request_bytes_sanitizes_overridden_user_agent() {
+        let parsed = ParsedUrl::parse("http://example.com/test").unwrap();
+        let headers = vec![(
+            "User-Agent".to_string(),
+            "custom-agent\r\nX-Injected: nope".to_string(),
+        )];
+        let bytes = build_request_bytes(Method::Get, &parsed, "agent", &headers, &[]);
+        let text = String::from_utf8(bytes).unwrap();
+
+        assert!(text.contains("User-Agent: custom-agentX-Injected: nope\r\n"));
+        assert_eq!(text.matches("User-Agent: ").count(), 1);
+        assert!(!text.contains("\r\nX-Injected: nope\r\n"));
     }
 
     // ── build_recorded_request ─────────────────────────────────────────
