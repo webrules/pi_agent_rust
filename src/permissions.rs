@@ -249,14 +249,22 @@ impl PermissionStore {
         // Convert internal HashMap → Vec for stable serialization.
         let file = PermissionsFile {
             version: CURRENT_VERSION,
-            decisions: self
-                .decisions
-                .iter()
-                .map(|(ext_id, by_cap)| {
-                    let decs: Vec<PersistedDecision> = by_cap.values().cloned().collect();
-                    (ext_id.clone(), decs)
-                })
-                .collect(),
+            decisions: {
+                let mut extension_ids = self.decisions.keys().cloned().collect::<Vec<_>>();
+                extension_ids.sort();
+                extension_ids
+                    .into_iter()
+                    .map(|extension_id| {
+                        let by_cap = self
+                            .decisions
+                            .get(&extension_id)
+                            .expect("extension id collected from decision map");
+                        let mut decisions = by_cap.values().cloned().collect::<Vec<_>>();
+                        decisions.sort_by(|left, right| left.capability.cmp(&right.capability));
+                        (extension_id, decisions)
+                    })
+                    .collect()
+            },
         };
 
         let mut contents = serde_json::to_string_pretty(&file)?;
@@ -1081,6 +1089,34 @@ mod tests {
             assert_eq!(store.lookup("ext-b", "http"), Some(false)); // unchanged
             assert_eq!(store.lookup("ext-c", "env"), Some(true)); // new
         }
+    }
+
+    #[test]
+    fn save_serializes_extensions_and_capabilities_stably() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("permissions.json");
+        let mut store = PermissionStore::open(&path).unwrap();
+
+        store.record("ext-b", "env", true).unwrap();
+        store.record("ext-a", "http", false).unwrap();
+        store.record("ext-a", "exec", true).unwrap();
+
+        let raw = std::fs::read_to_string(&path).unwrap();
+        let ext_a = raw.find("\"ext-a\"").unwrap();
+        let ext_b = raw.find("\"ext-b\"").unwrap();
+        let exec = raw.find("\"capability\": \"exec\"").unwrap();
+        let http = raw.find("\"capability\": \"http\"").unwrap();
+        let env = raw.find("\"capability\": \"env\"").unwrap();
+
+        assert!(
+            ext_a < ext_b,
+            "extension ids should serialize in sorted order"
+        );
+        assert!(exec < http, "capabilities should serialize in sorted order");
+        assert!(
+            http < env,
+            "later extensions should appear after earlier ones"
+        );
     }
 
     #[test]
