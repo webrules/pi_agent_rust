@@ -8,6 +8,7 @@ use crate::auth::{AuthStorage, CredentialStatus};
 use crate::config::Config;
 use crate::error::Result;
 use crate::provider_metadata::provider_auth_env_keys;
+use crate::session::SessionHeader;
 use crate::session_index::walk_sessions;
 use serde::Serialize;
 use std::collections::HashSet;
@@ -1080,8 +1081,17 @@ fn check_sessions(findings: &mut Vec<Finding>) {
     }
 }
 
-/// Quick health check: non-empty and first line parses as JSON.
+/// Quick health check: non-empty and first line parses as a valid session header.
 fn is_session_healthy(path: &Path) -> bool {
+    #[cfg(feature = "sqlite-sessions")]
+    if path.extension().and_then(|ext| ext.to_str()) == Some("sqlite") {
+        return futures::executor::block_on(async {
+            crate::session_sqlite::load_session_meta(path)
+                .await
+                .is_ok_and(|meta| meta.header.is_valid())
+        });
+    }
+
     let Ok(file) = std::fs::File::open(path) else {
         return false;
     };
@@ -1089,7 +1099,7 @@ fn is_session_healthy(path: &Path) -> bool {
     let mut line = String::new();
     match reader.read_line(&mut line) {
         Ok(0) | Err(_) => false, // empty or unreadable
-        Ok(_) => serde_json::from_str::<serde_json::Value>(&line).is_ok(),
+        Ok(_) => serde_json::from_str::<SessionHeader>(&line).is_ok_and(|header| header.is_valid()),
     }
 }
 
@@ -1366,7 +1376,11 @@ mod tests {
     fn session_healthy_valid_json() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("valid.jsonl");
-        std::fs::write(&path, r#"{"type":"header","version":1}"#).unwrap();
+        std::fs::write(
+            &path,
+            r#"{"type":"session","version":3,"id":"doctor-jsonl","timestamp":"2026-01-01T00:00:00.000Z","cwd":"/tmp"}"#,
+        )
+        .unwrap();
         assert!(is_session_healthy(&path));
     }
 
@@ -1375,6 +1389,62 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("invalid.jsonl");
         std::fs::write(&path, "not json at all\n").unwrap();
+        assert!(!is_session_healthy(&path));
+    }
+
+    #[test]
+    fn session_healthy_rejects_non_header_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("array.jsonl");
+        std::fs::write(&path, "[1,2,3]\n").unwrap();
+        assert!(!is_session_healthy(&path));
+    }
+
+    #[cfg(feature = "sqlite-sessions")]
+    #[test]
+    fn session_healthy_valid_sqlite() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("valid.sqlite");
+        let header = SessionHeader {
+            id: "doctor-sqlite".to_string(),
+            ..SessionHeader::default()
+        };
+        futures::executor::block_on(async {
+            crate::session_sqlite::save_session(&path, &header, &[])
+                .await
+                .expect("save sqlite session");
+        });
+        assert!(is_session_healthy(&path));
+    }
+
+    #[cfg(feature = "sqlite-sessions")]
+    #[test]
+    fn session_healthy_rejects_invalid_sqlite_header() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("invalid.sqlite");
+        let header = SessionHeader {
+            id: "doctor-sqlite".to_string(),
+            ..SessionHeader::default()
+        };
+        futures::executor::block_on(async {
+            crate::session_sqlite::save_session(&path, &header, &[])
+                .await
+                .expect("save sqlite session");
+        });
+        let invalid_header = SessionHeader {
+            r#type: "not-session".to_string(),
+            ..header
+        };
+        let invalid_json =
+            serde_json::to_string(&invalid_header).expect("serialize invalid session header");
+        let config = sqlmodel_sqlite::SqliteConfig::file(path.to_string_lossy())
+            .flags(sqlmodel_sqlite::OpenFlags::create_read_write());
+        let conn = sqlmodel_sqlite::SqliteConnection::open(&config).expect("open sqlite db");
+        conn.execute_sync(
+            "UPDATE pi_session_header SET json = ?1",
+            &[sqlmodel_core::Value::Text(invalid_json)],
+        )
+        .expect("corrupt sqlite header row");
         assert!(!is_session_healthy(&path));
     }
 
