@@ -1,0 +1,21 @@
+name: Build for iSH
+on: workflow_dispatch
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code 
+        uses: actions/checkout@v4
+      - name: Setup Rust 
+        uses: dtolnay/rust-toolchain@stable
+        with: 
+          targets: i686-unknown-linux-musl
+      - name: Install Cross
+        run: cross build --target i686-unknown-linux-musl --release
+      - name: Upload Artifact
+        uses: actions/upload -artifacts@v4
+      with: 
+        name: pi_agent_rust_ish 
+        path: target/i686-unknown-linux-musl/release/pi-agent-rust
+        
